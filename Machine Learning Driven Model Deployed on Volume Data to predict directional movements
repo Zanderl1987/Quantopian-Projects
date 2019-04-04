@@ -1,0 +1,199 @@
+# Use the previous n number of bars' movements to predict the next movement.
+
+# Use a random forest classifier. More here: http://scikit-learn.org/stable/user_guide.html
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import ExtraTreesRegressor
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import LinearSVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier
+#from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+#from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
+
+
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.ensemble import AdaBoostRegressor
+
+
+# PREPROCESSING
+from sklearn import preprocessing
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import Normalizer
+
+import numpy as np
+import pandas as pd
+import talib
+
+
+def initialize(context):
+    context.security = sid(19658) # Trade SPY
+                                                
+    context.lookback = 126 # Look back n days
+    context.history_range = 252 # Only consider the past n days' history
+    
+    
+    # Define random state variable for AdaBoost
+    rng = np.random.RandomState(1)
+    
+    
+    #context.model_ABR_DTR = AdaBoostRegressor(DecisionTreeRegressor(),n_estimators=300, random_state=rng)
+    # Was originally max_depth=4
+    
+    #context.model_RFR = RandomForestRegressor(n_estimators=300)
+    #context.model_ETR = ExtraTreesRegressor(n_estimators=300)
+    
+    context.model_ABC_DTC = AdaBoostClassifier(DecisionTreeClassifier(),n_estimators=200,
+                                               learning_rate=1,
+                                               algorithm='SAMME')
+    
+    context.model_GBC = GradientBoostingClassifier(loss='deviance',
+                                                   learning_rate=0.1,
+                                                   n_estimators=200)
+    
+    context.model_RFC = RandomForestClassifier(n_estimators=200,
+                                               criterion='gini',
+                                               max_depth=None,
+                                               min_samples_split=2,
+                                               min_samples_leaf=2,
+                                               max_features='auto',
+                                               bootstrap=False,
+                                               oob_score=False,
+                                               n_jobs=1,
+                                               random_state=rng,
+                                               verbose=0)
+    
+    context.model_ETC = ExtraTreesClassifier(n_estimators=200,
+                                             criterion='gini',
+                                             max_depth=None,
+                                             min_samples_split=2,
+                                             min_samples_leaf=2,
+                                             min_weight_fraction_leaf=0.0,
+                                             max_features='auto',
+                                             max_leaf_nodes=None,
+                                             bootstrap=False, 
+                                             oob_score=False,
+                                             n_jobs=1,
+                                             random_state=rng,
+                                             verbose=0, 
+                                             warm_start=False,
+                                             class_weight=None)
+    
+    context.model_LRC = LogisticRegression()
+    #context.model_LDA = LDA()
+    #context.model_QDA = QDA()
+    context.model_LSVC = LinearSVC()
+    context.model_SVC = SVC(C=1000000.0,
+                            cache_size=200,
+                            kernel='rbf',
+                            gamma=0.0001,
+                            probability=True,
+                            random_state=rng,
+                            shrinking=True,
+                            tol=0.001,
+                            verbose=False)
+    
+    context.model_KNN = KNeighborsClassifier()
+    
+    # Generate a new model every __ period
+    
+    # Model was originally set to re-create itself every week
+    # date_rules.week_end()
+    schedule_function(create_model, date_rules.week_start(), time_rules.market_open(minutes=1))
+
+    # Trade at the start of every day
+    schedule_function(trade, date_rules.week_start(), time_rules.market_open(minutes=15))
+
+def create_model(context, data):
+    
+    print('Portfolio PnL',context.portfolio.pnl)
+    print('Portfolio Value', context.portfolio.portfolio_value)
+    print('Equity Curve',context.portfolio.portfolio_value - context.portfolio.starting_cash)
+    
+    # Get the relevant daily prices
+    recent_prices = data.history(context.security,'volume', context.history_range,'1d').values
+    
+    # Get the price changes
+    price_changes = np.diff(recent_prices).tolist()
+    
+    
+    #print(len(price_changes))
+
+
+    X = [] # Independent, or input variables
+    Y = [] # Dependent, or output variable
+    
+    # For each day in our history
+    for i in range(context.history_range-context.lookback-1):
+        X.append(price_changes[i:i+context.lookback]) # Store prior price changes
+        Y.append(price_changes[i+context.lookback]) # Store the day's price change
+    
+    #print(Y)
+    
+    #print(len(X))
+    #print(len(Y))
+    
+    # SCALE THE DATA
+    #X = MinMaxScaler(feature_range=(-1,1)).fit_transform(X)
+    
+    normalizer = preprocessing.Normalizer().fit(X)
+    X = normalizer.fit_transform(X)
+
+
+    context.model_ABC_DTC.fit(X, Y) # Generate our model
+    context.model_GBC.fit(X, Y)
+    context.model_RFC.fit(X, Y)
+    context.model_LRC.fit(X, Y)
+    context.model_LSVC.fit(X, Y)
+    context.model_ETC.fit(X, Y)
+    #context.model_SVC.fit(X, Y)
+    context.model_KNN.fit(X, Y)
+    
+    #context.model_LDA.fit(X, Y)
+    #context.model_QDA.fit(X, Y)
+
+def trade(context, data):
+    if context.model_ABC_DTC: # Check if our model is generated
+        
+        # Get recent prices
+        recent_prices = data.history(context.security, 'volume', context.lookback+1, '1d').values
+        
+        # Get the price changes
+        price_changes = np.diff(recent_prices).tolist()
+        
+        
+        # Predict using our model and the recent prices
+        prediction_ABC_DTC = context.model_ABC_DTC.predict(price_changes)
+        prediction_GBC = context.model_GBC.predict(price_changes)
+        prediction_RFC = context.model_RFC.predict(price_changes)
+        prediction_ETC = context.model_ETC.predict(price_changes)
+        prediction_LRC = context.model_LRC.predict(price_changes)
+        prediction_LSVC = context.model_LSVC.predict(price_changes)
+        #prediction_SVC = context.model_SVC.predict(price_changes)
+        prediction_KNN = context.model_KNN.predict(price_changes)
+        
+        prediction_avg = (prediction_ABC_DTC + prediction_RFC + prediction_ETC + prediction_GBC + prediction_LRC + prediction_LSVC + prediction_KNN)
+        
+        # Prediction with output scaling between -1 and 1
+        #prediction = np.clip(context.model.predict(price_changes),1,-1)
+        record(predictionABC_DTC = prediction_ABC_DTC,
+              prediction_GBC = prediction_GBC,
+              prediction_RFC = prediction_RFC,
+              prediction_ETC = prediction_ETC,
+              #prediction_LRC = prediction_LRC,
+              #prediction_LSVC = prediction_LSVC,
+              #prediction_SVC = prediction_SVC,
+              #prediction_KNN = prediction_KNN,
+              prediction_avg = prediction_avg)
+        
+        # Go long if we predict the price will rise, short otherwise
+        # UPDATE 6/14/2018 Go short if we predict the price will rise, long otherwise
+        if prediction_avg < 0:
+            order_target_percent(context.security, 1.0)
+        else:
+            order_target_percent(context.security, -1.0)
