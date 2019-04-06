@@ -1,0 +1,446 @@
+# Use the previous n number of bars' movements to predict the next movement.
+ 
+# Use a random forest classifier. More here: http://scikit-learn.org/stable/user_guide.html
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import ExtraTreesRegressor
+ 
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import LinearSVC
+ 
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+ 
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neighbors import KNeighborsRegressor
+ 
+from sklearn.naive_bayes import GaussianNB
+#from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+#from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
+ 
+ 
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.ensemble import AdaBoostRegressor
+ 
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingRegressor
+ 
+# PREPROCESSING
+from sklearn import preprocessing
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import Normalizer
+ 
+import numpy as np
+import pandas as pd
+import datetime
+import talib
+import math as m
+ 
+ 
+def initialize(context):
+    context.security = sid(16841)
+    
+    context.lookback = 3 # Look back n days
+    context.history_range = 504 # Only consider the past n days' history
+    
+    n_estimators_value = 10
+    
+    # Define random state variable for AdaBoost
+    rng = np.random.RandomState(1)
+    
+    context.model_ABR_DTR = AdaBoostRegressor(DecisionTreeRegressor(),n_estimators=n_estimators_value, random_state=rng)
+    # Was originally max_depth=4
+    
+    context.model_RFR = RandomForestRegressor(n_estimators=n_estimators_value)
+    context.model_ETR = ExtraTreesRegressor(n_estimators=n_estimators_value)    
+    
+    context.model_GNB = GaussianNB()
+    
+    context.model_ABC_DTC = AdaBoostClassifier(DecisionTreeClassifier(min_samples_split=2,  min_samples_leaf=1),n_estimators=n_estimators_value,
+                                               learning_rate=0.1,
+                                               algorithm='SAMME')
+    
+    context.model_GBC = GradientBoostingClassifier(loss='deviance',
+                                                   learning_rate=0.1,
+                                                   n_estimators=n_estimators_value)
+    
+    context.model_GBR = GradientBoostingRegressor(loss='ls',
+                                                  learning_rate=0.1,
+                                                  n_estimators=n_estimators_value,
+                                                  subsample=1.0,
+                                                  min_samples_split=2,
+                                                  min_samples_leaf=2,
+                                                  random_state=rng,
+                                                  max_features='auto',
+                                                  alpha=0.9,
+                                                  verbose=0)
+    
+    context.model_RFC = RandomForestClassifier(n_estimators=n_estimators_value,
+                                               criterion='gini',
+                                               max_depth=None,
+                                               min_samples_split=2,
+                                               min_samples_leaf=2,
+                                               max_features='auto',
+                                               bootstrap=False,
+                                               oob_score=False,
+                                               n_jobs=1,
+                                               random_state=rng,
+                                               verbose=0)
+    
+    context.model_ETC = ExtraTreesClassifier(n_estimators=n_estimators_value,
+                                             criterion='gini',
+                                             max_depth=None,
+                                             min_samples_split=2,
+                                             min_samples_leaf=2,
+                                             min_weight_fraction_leaf=0.0,
+                                             max_features='auto',
+                                             max_leaf_nodes=None,
+                                             bootstrap=False, 
+                                             oob_score=False,
+                                             n_jobs=1,
+                                             random_state=rng,
+                                             verbose=0, 
+                                             warm_start=False,
+                                             class_weight=None)
+    
+    context.model_LRC = LogisticRegression()
+    #context.model_LDA = LDA()
+    #context.model_QDA = QDA()
+    context.model_LSVC = LinearSVC()
+    context.model_SVC = SVC(C=1000000.0,
+                            cache_size=200,
+                            kernel='rbf',
+                            gamma=0.0001,
+                            probability=True,
+                            random_state=rng,
+                            shrinking=True,
+                            tol=0.001,
+                            verbose=False)
+    
+    context.model_KNN = KNeighborsClassifier(n_neighbors=3)
+    # n_neighbors default is 5
+    
+    context.model_KNNR = KNeighborsRegressor(n_neighbors=3)
+    
+    # Generate a new model every __ period
+    
+    # Model was originally set to re-create itself every week
+    # date_rules.week_end()
+    schedule_function(create_model, date_rules.week_start(), time_rules.market_open(minutes=1))
+ 
+    # Trade at the start of every day
+    schedule_function(trade, date_rules.week_start(), time_rules.market_open(minutes=15))
+ 
+def create_model(context, data):
+    # Get the relevant daily prices
+    #recent_prices = data.history(context.security, 'price', context.history_range, '1d').values
+        
+    print('Portfolio PnL',context.portfolio.pnl)
+    print('Portfolio Value', context.portfolio.portfolio_value)
+    print('Equity Curve',context.portfolio.portfolio_value - context.portfolio.starting_cash)
+    
+    hist = data.history(context.security,'price',context.history_range,'1d')
+    hist_volume = data.history(context.security,'volume', context.history_range,'1d')
+ 
+    hist_ohlc = data.history(context.security, ['open','high','low','close','volume','price'], context.history_range, '1d')
+    
+    #pd.DataFrame.resample(hist_ohlc,rule='3D',axis=0)
+    
+    hist_ohlc['ROC_20'] = talib.ROC(hist_ohlc['price'],timeperiod=20)
+    hist_ohlc['ROC_20'] = np.where(hist_ohlc['ROC_20'] >= 0,1,-1)
+    
+    hist_ohlc['dayofweek'] = hist_ohlc['price'].index.dayofweek
+    hist_ohlc['dayofyear'] = hist_ohlc['price'].index.dayofyear
+    
+    hist_ohlc['EMA_63'] = talib.EMA(hist_ohlc['close'],timeperiod=63)
+    
+    hist_ohlc['RSI_14'] = talib.RSI(hist_ohlc['close'],timeperiod=14)
+    hist_ohlc['RSI_14_70dvar'] = np.where(hist_ohlc['RSI_14'] >= 70,1,0)
+    hist_ohlc['RSI_14_30dvar'] = np.where(hist_ohlc['RSI_14'] <= 30,1,0)
+    
+    hist_ohlc['CDLDOJI'] = talib.CDLDOJI(hist_ohlc['open'],hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'])
+    
+    # Momentum indicator
+    hist_ohlc['MOM_30'] = talib.MOM(hist_ohlc['price'], timeperiod=30)
+    hist_ohlc['MOM_30_direction'] = np.where(hist_ohlc['MOM_30'] >= 0,1,-1)
+    
+    # Absolute Price Oscillator (momentum indicator)
+    hist_ohlc['APO_12_26'] = talib.APO(hist_ohlc['close'],fastperiod=12, slowperiod=26,matype=0)
+    
+    hist_ohlc['ADX_14'] = talib.ADX(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],timeperiod=14)
+    
+    hist_ohlc['ADOSC_3_10'] = talib.ADOSC(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],hist_ohlc['volume'],
+                              fastperiod=3,
+                              slowperiod=10)
+    
+    hist_ohlc['AD'] = talib.AD(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],hist_ohlc['volume'])
+    
+    hist_ohlc['ATR_14'] = talib.ATR(hist_ohlc['high'],
+                        hist_ohlc['low'],
+                        hist_ohlc['close'],
+                        timeperiod=14)
+    
+    
+    hist_ohlc.fillna(value=-99999.00,axis=0,inplace=True)
+    
+    ROC_20 = hist_ohlc['ROC_20'].values
+    ROC_20_changes = np.diff(ROC_20).tolist()
+    
+    dayofyear = hist_ohlc['dayofyear'][:-1].values
+    dayofyear_list = dayofyear.tolist()
+    
+    dayofweek = hist_ohlc['dayofweek'][:-1].values
+    dayofweek_list = dayofweek.tolist()
+    
+    EMA_63 = hist_ohlc['EMA_63'].values
+    EMA_63_changes = np.diff(EMA_63).tolist()
+ 
+    RSI_14_70dvar = hist_ohlc['RSI_14_70dvar'].values
+    RSI_14_70dvar_changes = np.diff(RSI_14_70dvar).tolist()
+    
+    RSI_14_30dvar = hist_ohlc['RSI_14_30dvar'].values
+    RSI_14_30dvar_changes = np.diff(RSI_14_30dvar).tolist()
+    
+    CDLDOJI = hist_ohlc['CDLDOJI'].values
+    CDLDOJI_changes = np.diff(CDLDOJI).tolist()
+    
+    MOM_30 = hist_ohlc['MOM_30'].values
+    MOM_30_changes = np.diff(MOM_30).tolist()
+    
+    MOM_30_direction_changes = hist_ohlc['MOM_30_direction'][:-1].values.tolist()
+    #MOM_30_direction_changes = np.diff(MOM_30_direction).tolist()
+    
+    APO_12_26 = hist_ohlc['APO_12_26'].values
+    APO_12_26_changes = np.diff(APO_12_26).tolist()
+    
+    ADX_14 = hist_ohlc['ADX_14'].values
+    ADX_14_changes = np.diff(ADX_14).tolist()
+    
+    ADOSC_3_10 = hist_ohlc['ADOSC_3_10'].values
+    ADOSC_3_10_changes = np.diff(ADOSC_3_10).tolist()
+    
+    AD = hist_ohlc['AD'].values
+    AD_changes = np.diff(AD).tolist()
+    
+    ATR_14 = hist_ohlc['ATR_14'].values
+    ATR_14_changes = np.diff(ATR_14).tolist()
+    
+    RSI_14 = hist_ohlc['RSI_14'].values
+    RSI_14_changes = np.diff(RSI_14).tolist()    
+    
+    recent_prices = hist.values
+    price_changes = np.where(np.diff(recent_prices) > 0,1,-1).tolist()
+    
+    recent_opens = hist_ohlc['open'].values
+    price_changes_open = np.diff(recent_opens).tolist()
+ 
+    recent_highs = hist_ohlc['high'].values
+    price_changes_high = np.where(np.diff(recent_highs) > 0,1,-1).tolist()
+    
+    recent_lows = hist_ohlc['low'].values
+    price_changes_low = np.where(np.diff(recent_lows) > 0,1,-1).tolist()
+    
+    recent_volume = hist_volume.values
+    volume_changes = np.diff(recent_volume).tolist()
+    
+    
+ 
+    X = [] # Independent, or input variables
+    Y = [] # Dependent, or output variable
+    
+    # For each day in our history
+    for i in range(context.history_range-context.lookback-1):
+        X.append(price_changes[i:i+context.lookback] + volume_changes[i:i+context.lookback] + ATR_14_changes[i:i+context.lookback] + price_changes_open[i:i+context.lookback] + price_changes_high[i:i+context.lookback] + price_changes_low[i:i+context.lookback] + RSI_14_changes[i:i+context.lookback] + AD_changes[i:i+context.lookback] + ADOSC_3_10_changes[i:i+context.lookback] + ADX_14_changes[i:i+context.lookback] + APO_12_26_changes[i:i+context.lookback] + MOM_30_changes[i:i+context.lookback] + CDLDOJI_changes[i:i+context.lookback] + RSI_14_70dvar_changes[i:i+context.lookback] + RSI_14_30dvar_changes[i:i+context.lookback] + EMA_63_changes[i:i+context.lookback] + dayofweek_list[i:i+context.lookback] + dayofyear_list[i:i+context.lookback] + ROC_20_changes[i:i+context.lookback] + MOM_30_direction_changes[i:i+context.lookback]) # Store prior price changes
+        #Y.append(price_changes[i+context.lookback]) # Store the day's price change
+        Y.append(price_changes[i+context.lookback])
+    
+    
+    # SCALE THE DATA
+    #X = MinMaxScaler(feature_range=(-1,1)).fit_transform(X)
+    
+    normalizer = preprocessing.Normalizer().fit(X)
+    X = normalizer.fit_transform(X)
+ 
+    context.model_ABC_DTC.fit(X,Y) # Generate our model
+    context.model_GBC.fit(X,Y)
+    context.model_GBR.fit(X,Y)
+    context.model_RFC.fit(X,Y)
+    context.model_LRC.fit(X,Y)
+    context.model_LSVC.fit(X,Y)
+    context.model_ETC.fit(X,Y)
+    context.model_SVC.fit(X,Y)
+    context.model_KNN.fit(X,Y)
+    context.model_KNNR.fit(X,Y)
+    context.model_GNB.fit(X,Y)
+    context.model_ABR_DTR.fit(X,Y)
+    context.model_RFR.fit(X,Y)
+    context.model_ETR.fit(X,Y)
+    #context.model_LDA.fit(X,Y)
+    #context.model_QDA.fit(X,Y)
+ 
+def trade(context, data):
+    if context.model_ABC_DTC: # Check if our model is generated
+        
+        
+        # Get recent prices
+        hist = data.history(context.security,'price', context.lookback+1, '1d')
+        hist_volume = data.history(context.security,'volume', context.lookback+1, '1d')
+ 
+        hist_ohlc = data.history(context.security, ['open','high','low','close','volume','price'], context.lookback+1,'1d')
+        
+        #pd.DataFrame.resample(hist_ohlc,rule='10D',axis=0)
+        
+        hist_ohlc['ROC_20'] = talib.ROC(hist_ohlc['price'],timeperiod=20)
+        hist_ohlc['ROC_20'] = np.where(hist_ohlc['ROC_20'] >= 0,1,-1)
+        
+        hist_ohlc['dayofyear'] = hist_ohlc['price'].index.dayofyear
+        
+        hist_ohlc['dayofweek'] = hist_ohlc['price'].index.dayofweek
+        
+        hist_ohlc['EMA_63'] = talib.EMA(hist_ohlc['close'],timeperiod=63)
+        
+        # Create some dummy variable features around key RSI levels
+        hist_ohlc['RSI_14'] = talib.RSI(hist_ohlc['close'],timeperiod=14)
+        hist_ohlc['RSI_14_70dvar'] = np.where(hist_ohlc['RSI_14'] >= 70,1,0)
+        hist_ohlc['RSI_14_30dvar'] = np.where(hist_ohlc['RSI_14'] <= 30,1,0)
+        
+        hist_ohlc['CDLDOJI'] = talib.CDLDOJI(hist_ohlc['open'],hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'])
+        
+        # Momentum indicator
+        hist_ohlc['MOM_30'] = talib.MOM(hist_ohlc['price'], timeperiod=30)
+        hist_ohlc['MOM_30_direction'] = np.where(hist_ohlc['MOM_30'] >= 0,1,-1)
+        
+        # Absolute Price Oscillator (momentum indicator)
+        hist_ohlc['APO_12_26'] = talib.APO(hist_ohlc['close'],fastperiod=12,
+                               slowperiod=26,
+                               matype=0)
+        
+        hist_ohlc['ADX_14'] = talib.ADX(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],timeperiod=14)
+        
+        
+        hist_ohlc['ADOSC_3_10'] = talib.ADOSC(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],hist_ohlc['volume'],
+                              fastperiod=3,
+                              slowperiod=10)
+        
+        hist_ohlc['AD'] = talib.AD(hist_ohlc['high'],hist_ohlc['low'],hist_ohlc['close'],hist_ohlc['volume'])
+        
+        hist_ohlc['ATR_14'] = talib.ATR(hist_ohlc['high'],
+                        hist_ohlc['low'],
+                        hist_ohlc['close'],
+                        timeperiod=14)
+       
+        hist_ohlc.fillna(value=-99999.00,axis=0,inplace=True)
+        
+ 
+        ROC_20 = hist_ohlc['ROC_20'].values
+        ROC_20_changes = np.diff(ROC_20).tolist()
+        
+        dayofyear = hist_ohlc['dayofyear'][:-1].values
+        dayofyear_list = dayofyear.tolist()
+        
+        dayofweek = hist_ohlc['dayofweek'][:-1].values
+        dayofweek_list = dayofweek.tolist()
+        
+        EMA_63 = hist_ohlc['EMA_63'].values
+        EMA_63_changes = np.diff(EMA_63).tolist()
+        
+        RSI_14_70dvar = hist_ohlc['RSI_14_70dvar'].values
+        RSI_14_70dvar_changes = np.diff(RSI_14_70dvar).tolist()
+    
+        RSI_14_30dvar = hist_ohlc['RSI_14_30dvar'].values
+        RSI_14_30dvar_changes = np.diff(RSI_14_30dvar).tolist()
+        
+        CDLDOJI = hist_ohlc['CDLDOJI'].values
+        CDLDOJI_changes = np.diff(CDLDOJI).tolist()
+        
+        MOM_30 = hist_ohlc['MOM_30'].values
+        MOM_30_changes = np.diff(MOM_30).tolist()        
+        
+        
+        MOM_30_direction_changes = hist_ohlc['MOM_30_direction'][:-1].values.tolist()
+        #MOM_30_direction_changes = np.diff(MOM_30_direction).tolist()
+        
+        APO_12_26 = hist_ohlc['APO_12_26'].values
+        APO_12_26_changes = np.diff(APO_12_26).tolist()
+        
+        ADOSC_3_10 = hist_ohlc['ADOSC_3_10'].values
+        ADOSC_3_10_changes = np.diff(ADOSC_3_10).tolist()
+        
+        ADX_14 = hist_ohlc['ADX_14'].values
+        ADX_14_changes = np.diff(ADX_14).tolist()
+        
+        AD = hist_ohlc['AD'].values
+        AD_changes = np.diff(AD).tolist()
+        
+        ATR_14 = hist_ohlc['ATR_14'].values
+        ATR_14_changes = np.diff(ATR_14).tolist()        
+        
+        RSI_14 = hist_ohlc['RSI_14'].values
+        RSI_14_changes = np.diff(RSI_14).tolist()         
+        
+        recent_prices = hist.values
+        price_changes = np.where(np.diff(recent_prices) > 0,1,-1).tolist()
+        
+        recent_opens = hist_ohlc['open'].values
+        price_changes_open = np.diff(recent_opens).tolist()
+        
+        recent_highs = hist_ohlc['high'].values
+        price_changes_high = np.where(np.diff(recent_highs) > 0,1,-1).tolist()
+ 
+        recent_lows = hist_ohlc['low'].values
+        price_changes_low = np.where(np.diff(recent_lows) > 0,1,-1).tolist()        
+        recent_volume = hist_volume.values
+        volume_changes = np.diff(recent_volume).tolist()
+        
+        
+        
+        values_to_predict = (price_changes + volume_changes + ATR_14_changes + price_changes_open + price_changes_high + price_changes_low + RSI_14_changes + AD_changes + ADOSC_3_10_changes + ADX_14_changes + APO_12_26_changes + MOM_30_changes + CDLDOJI_changes + RSI_14_70dvar_changes + RSI_14_30dvar_changes + EMA_63_changes + dayofweek_list + dayofyear_list + ROC_20_changes + MOM_30_direction_changes)
+        
+        # Predict using our model and the recent prices
+        # There are 14 models 
+        prediction_ABR_DTR = np.clip(context.model_ABR_DTR.predict(values_to_predict),1,-1)
+        prediction_ABC_DTC = np.clip(context.model_ABC_DTC.predict(values_to_predict),1,-1)
+        prediction_GBC = np.clip(context.model_GBC.predict(values_to_predict),1,-1)
+        prediction_RFC = np.clip(context.model_RFC.predict(values_to_predict),1,-1)
+        prediction_ETC = np.clip(context.model_ETC.predict(values_to_predict),1,-1)
+        prediction_LRC = np.clip(context.model_LRC.predict(values_to_predict),1,-1)
+        prediction_LSVC = np.clip(context.model_LSVC.predict(values_to_predict),1,-1)
+        prediction_SVC = np.clip(context.model_SVC.predict(values_to_predict),1,-1)
+        prediction_KNN = np.clip(context.model_KNN.predict(values_to_predict),1,-1)
+        prediction_GNB = np.clip(context.model_GNB.predict(values_to_predict),1,-1)
+        prediction_RFR = np.clip(context.model_RFR.predict(values_to_predict),1,-1)
+        prediction_ETR = np.clip(context.model_ETR.predict(values_to_predict),1,-1)
+        prediction_GBR = np.clip(context.model_GBR.predict(values_to_predict),1,-1)
+        prediction_KNNR = np.clip(context.model_KNNR.predict(values_to_predict),1,-1)
+        
+        
+        # create our prediction average variable so everybody gets one vote
+        prediction_avg = (prediction_ABC_DTC + prediction_ABR_DTR + prediction_RFC + prediction_ETC + prediction_GBC + prediction_LRC + prediction_KNN + prediction_LSVC + prediction_GNB + prediction_SVC + prediction_RFR + prediction_ETR + prediction_GBR + prediction_KNNR)
+        
+        # Prediction with output scaling between -1 and 1
+        # prediction = np.clip(context.model.predict(price_changes),1,-1)
+        record(predictionABC_DTC = prediction_ABC_DTC,
+              prediction_GBC = prediction_GBC,
+              prediction_RFC = prediction_RFC,
+              prediction_ETC = prediction_ETC,
+               #prediction_LRC = prediction_LRC,
+               #prediction_LSVC = prediction_LSVC,
+               #prediction_SVC = prediction_SVC,
+               #prediction_KNN = prediction_KNN,
+               #prediction_SGDC = prediction_SGDC,
+               prediction_avg = prediction_avg)
+        
+        
+        if prediction_avg >= 5:
+            order_target_percent(context.security, 1)
+        if prediction_avg <= -5:
+            order_target_percent(context.security, -1)
+        else:
+            order_target_percent(context.security, 0)
+            
+        # if prediction_avg <= -8:
+        #     order_target_percent(context.security, 1)
+        # else:
+        #     order_target_percent(context.security, -1)
