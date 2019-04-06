@@ -1,0 +1,83 @@
+# Use a random forest classifier. More here: http://scikit-learn.org/stable/user_guide.html
+from sklearn.ensemble import RandomForestRegressor
+import numpy as np
+ 
+def initialize(context):
+    context.security = sid(8554) # ETF predictor
+    context.target = sid(16841) # ETF target
+    context.vol_model = RandomForestRegressor()
+    context.price_model = RandomForestRegressor()
+ 
+    context.lookback = 5 # Look back 5 periods
+    context.history_range = 200 # Only consider the past 400 periods' history
+ 
+    # Generate new models every day
+    schedule_function(create_vol_model, date_rules.month_start(), time_rules.market_close(minutes=10))
+    schedule_function(create_price_model, date_rules.month_start(), time_rules.market_close(minutes=15))
+ 
+    # Trade every day
+    schedule_function(trade, date_rules.week_start(), time_rules.market_open(minutes=1))
+ 
+def create_vol_model(context, data):
+    # Get the relevant daily volumes
+    recent_volumes = data.history(context.security, 'volume', context.history_range, '1d').values
+    
+    # Get the volume changes
+    volume_changes = np.diff(recent_volumes).tolist()
+ 
+    X = [] # Independent, or input variables
+    Y = [] # Dependent, or output variable
+    
+    # For each day in our history
+    for i in range(context.history_range-context.lookback-1):
+        X.append(volume_changes[i:i+context.lookback]) # Store prior volume changes
+        Y.append(volume_changes[i+context.lookback]) # Store the current volume change
+ 
+    context.vol_model.fit(X, Y) # Generate our model
+ 
+def create_price_model(context, data):
+    # Get the relevant daily prices
+    recent_prices = data.history(context.security, 'price', context.history_range, '1d').values
+    
+    # Get the price changes
+    price_changes = np.diff(recent_prices).tolist()
+ 
+    X = [] # Independent, or input variables
+    Y = [] # Dependent, or output variable
+    
+    # For each day in our history
+    for i in range(context.history_range-context.lookback-1):
+        X.append(price_changes[i:i+context.lookback]) # Store prior price changes
+        Y.append(price_changes[i+context.lookback]) # Store the day's price change
+ 
+    context.price_model.fit(X, Y) # Generate our model    
+ 
+def trade(context, data):
+    if context.vol_model and context.price_model: # Check if our models are generated
+        
+        # Get recent prices
+        recent_volumes = data.history(context.security, 'volume', context.lookback+1, '1d').values
+        recent_prices = data.history(context.security, 'price', context.lookback+1, '1d').values
+        
+        # Get the price changes
+        volume_changes = np.diff(recent_volumes).tolist()
+        price_changes = np.diff(recent_prices).tolist()
+        
+        # Predict using our models and the recent prices and volumes
+        vol_prediction = context.vol_model.predict(volume_changes)
+        record(vol_prediction = vol_prediction)
+        price_prediction = context.price_model.predict(price_changes)
+        record(price_prediction = price_prediction)
+        
+        
+        # Go long if we predict the price and volume will increase
+        # Sell if we predict the price and volume will decrease
+        # Close orders otherwise
+        # Trade XIV instead of SPY, but use SPY model
+        
+        if vol_prediction > 0 and price_prediction > 0:
+            order_target_percent(context.target, 1.0)
+        elif vol_prediction < 0 and price_prediction < 0:
+            order_target_percent(context.target, -1.0)
+        else:    
+            order_target_percent(context.target, 0)
